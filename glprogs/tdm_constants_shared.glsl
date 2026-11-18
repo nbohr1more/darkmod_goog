@@ -1,0 +1,46 @@
+/*****************************************************************************
+The Dark Mod GPL Source Code
+
+This file is part of the The Dark Mod Source Code, originally based
+on the Doom 3 GPL Source Code as published in 2011.
+
+The Dark Mod Source Code is free software: you can redistribute it
+and/or modify it under the terms of the GNU General Public License as
+published by the Free Software Foundation, either version 3 of the License,
+or (at your option) any later version. For details, see LICENSE.TXT.
+
+Project: The Dark Mod (http://www.thedarkmod.com/)
+
+******************************************************************************/
+
+#define SFL_SURFACE_HAS_DIFFUSE_TEXTURE					0x01
+#define SFL_SURFACE_HAS_SPECULAR_TEXTURE				0x02
+#define SFL_SURFACE_HAS_NORMAL_TEXTURE					0x04
+#define SFL_SURFACE_HAS_PARALLAX_TEXTURE				0x08
+
+#define SFL_SURFACE_NORMAL_TEXTURE_RGTC					0x10
+#define SFL_SURFACE_HAS_TEXTURE_MATRIX					0x20	// in any stage
+
+#define SFL_LIGHT_CUBIC									0x0100
+#define SFL_LIGHT_AMBIENT_HAS_DIFFUSE_CUBEMAP			0x0200
+#define SFL_LIGHT_AMBIENT_HAS_SPECULAR_CUBEMAP			0x0400
+#define SFL_LIGHT_AMBIENT_HAS_SSAO						0x0800
+
+#define SFL_INTERACTION_SHADOWS							0x010000
+#define SFL_INTERACTION_BUMPMAP_LIGHT_TOGGLING_FIX		0x020000
+#define SFL_INTERACTION_PARALLAX_OFFSET_EXTERNAL_SHADOWS 0x040000
+#define SFL_INTERACTION_SHADOW_MAP_CULL_FRONT			0x080000
+// with cull-front shadow maps: take nearest depth of a 2x2 / 4x4 texel footprint (closes one-texel light leaks at seams)
+#define SFL_INTERACTION_SHADOW_MAP_ERODE_2X2			0x100000
+#define SFL_INTERACTION_SHADOW_MAP_ERODE_4X4			0x200000
+// with cull-front shadow maps: use SSAO to darken light leaks in creases (needs r_ssao)
+#define SFL_INTERACTION_SHADOW_MAP_SSAO_LEAK			0x400000
+#define SFL_INTERACTION_SHADOW_MAP_ERODE_8X8			0x800000
+// stencil shadows: also multiply by shadow map which contains only alpha-tested casters (foliage, grates)
+#define SFL_INTERACTION_ALPHA_SHADOW					0x1000000
+// shadow maps: screen-space ray march towards the light (visible geometry in the depth buffer) can only add shadow: corrects light leaks
+#define SFL_INTERACTION_SHADOW_MAP_CONTACT				0x2000000
+
+bool checkFlag(int flags, int mask) {
+	return (flags & mask) != 0;
+}
