@@ -141,6 +141,8 @@ idMat4 RB_GetShaderTextureMatrix( const float *shaderRegisters, const textureSta
 static const int DSF_VIEW_INSIDE_SHADOW	= 1;
 static const int DSF_SOFT_PARTICLE = 2; // #3878
 static const int DSF_BLOCK_SELF_SHADOWS = 4; // #6571: used when light interaction and self-shadows are computed in one draw call
+static const int DSF_WORLD_GEOMETRY = 8;		// worldspawn _area* model
+static const int DSF_INLINE_MAP_MODEL = 16;	// inline .proc model (worldspawn or brush/patch func_static/mover)
 
 struct viewLight_s;
 

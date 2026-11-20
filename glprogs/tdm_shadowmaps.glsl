@@ -107,22 +107,26 @@ float ShadowAtlasNearestForVector(in sampler2D shadowMapTexture, vec4 shadowRect
 		vec2 texSize = textureSize(shadowMapTexture, 0);
 		vec2 shadow2d = (v1.xy * .5 + vec2(.5) ) * shadowRect.ww + shadowRect.xy;
 		shadow2d.x += (shadowRect.w + 1./texSize.x) * faceIdx;
-		vec4 d = textureGather(shadowMapTexture, shadow2d);
+		vec2 t = 1.0 / texSize;
+		vec2 faceMin = shadowRect.xy + vec2((shadowRect.w + t.x) * float(faceIdx), 0.0) + 0.55 * t;
+		vec2 faceMax = shadowRect.xy + vec2((shadowRect.w + t.x) * float(faceIdx), 0.0) + vec2(shadowRect.w) - 0.55 * t;
+		vec4 d = textureGather(shadowMapTexture, clamp(shadow2d, faceMin, faceMax));
 		float m = min(min(d.x, d.y), min(d.z, d.w));
 		// each gather covers 2x2 texels: 2x2 gathers = 4x4 texels (level 2), 4x4 gathers = 8x8 texels (level 3)
 		// note: loop bounds are constants, so that the compiler can unroll them
-		vec2 t = 1.0 / texSize;
 		if (erodeLevel > 2) {
 			for (int iy = -2; iy < 2; iy++) {
 				for (int ix = -2; ix < 2; ix++) {
-					vec4 dd = textureGather(shadowMapTexture, shadow2d + vec2(2 * ix + 1, 2 * iy + 1) * t);
+					vec2 uv = clamp(shadow2d + vec2(2 * ix + 1, 2 * iy + 1) * t, faceMin, faceMax);
+					vec4 dd = textureGather(shadowMapTexture, uv);
 					m = min(m, min(min(dd.x, dd.y), min(dd.z, dd.w)));
 				}
 			}
 		} else if (erodeLevel > 1) {
 			for (int iy = -1; iy < 1; iy++) {
 				for (int ix = -1; ix < 1; ix++) {
-					vec4 dd = textureGather(shadowMapTexture, shadow2d + vec2(2 * ix + 1, 2 * iy + 1) * t);
+					vec2 uv = clamp(shadow2d + vec2(2 * ix + 1, 2 * iy + 1) * t, faceMin, faceMax);
+					vec4 dd = textureGather(shadowMapTexture, uv);
 					m = min(m, min(min(dd.x, dd.y), min(dd.z, dd.w)));
 				}
 			}
@@ -161,7 +165,8 @@ float computeShadowMapCoefficient(
 	float fallAngleLimiter = smoothstep(0.01, 0.05, lightFallAngle);
 #endif
 	//some very generic error estimation...
-	float errorMargin = 5.0 * maxAbsL / ( shadowMapResolution * max(lightFallAngle, 0.1) );
+	float minFallAngle = shadowMapCullFrontHack ? 0.25 : 0.1;
+	float errorMargin = 5.0 * maxAbsL / ( shadowMapResolution * max(lightFallAngle, minFallAngle) );
 	if (shadowMapCullFrontHack)
 	   errorMargin *= -.5;
 
@@ -195,59 +200,48 @@ float computeShadowMapCoefficient(
 
 	//search for blockers in a cone with rather large angle
 	float searchAngle = 0.03 * softRadius;    //TODO: this option is probably very important
-	mat2 patternRot = softShadowsPatternRotation();
-	float avgBlockerZ = 0;
-	int blockerCnt = 0;
+	float minTangentNdl = 0.35 * max(lightFallAngle, 0.05);
+	float blockerBias = shadowMapCullFrontHack ? -0.25 * errorMargin : errorMargin;
+	float avgBlockerZ = 0.0;
+	float blockerWeight = 0.0;
 	for (int i = 0; i < softQuality; i++) {
-		//note: copy/paste from sampling code below
-		vec2 sp = patternRot * u_softShadowsSamples[i];
+		//use unrotated Poisson disk for blocker search so overlapping occluders do not jitter penumbra radius per pixel
+		vec2 sp = u_softShadowsSamples[i];
 		vec3 perturbedLightDir = normalize(L + searchAngle * (sp.x * orthoAxisX + sp.y * orthoAxisY));
 		float blockerZ = ShadowAtlasNearestForVector(shadowMap, shadowRect, perturbedLightDir, erodeLevel);
 		float dotDpL = max(max(abs(perturbedLightDir.x), abs(perturbedLightDir.y)), abs(perturbedLightDir.z));
-		float distCoeff = lightFallAngle / max(-dot(worldNormal, perturbedLightDir), 1e-3) * (dotDpL * secFallAngle);
+		float ndl = max(-dot(worldNormal, perturbedLightDir), minTangentNdl);
+		float distCoeff = clamp(lightFallAngle / ndl * (dotDpL * secFallAngle), 0.5, 2.0);
 		float fragZ = centerFragZ * distCoeff;
-		//note: only things which may potentially occlude are averaged
-		if (blockerZ < fragZ - errorMargin) {
-			avgBlockerZ += blockerZ;
-			blockerCnt++;
+		//note: only things which may potentially occlude are averaged; center-weighted for smooth overlap transitions
+		if (blockerZ < fragZ - blockerBias) {
+			float w = exp(-3.0 * dot(sp, sp));
+			avgBlockerZ += blockerZ * w;
+			blockerWeight += w;
 		}
 	}
-	//shortcut: no blockers in search angle => fully lit
-	if (blockerCnt == 0)
-		return fallAngleLimiter;
-	/* Bad optimization!
-	 * Go to St. Alban's Collateral and execute:
-	 *   setviewpos  -114.57 1021.61 130.95   -1.0 147.8 0.0
-	 * and you'll notice artefacts if you enable this piece of code.
-	//shortcut: all blockers in search angle => fully occluded
-	if (blockerCnt == softQuality && lit == 0) {
-		return 0.0;
+	//shortcut: no blockers in search angle (and central ray unoccluded) => fully lit
+	if (blockerWeight <= 0.0) {
+		if (lit >= 0.999)
+			return fallAngleLimiter;
+		avgBlockerZ = centerFragZ;
+	} else {
+		avgBlockerZ /= blockerWeight;
 	}
-	*/
-	avgBlockerZ /= blockerCnt;
 
 	//radius of light source
 	float lightRadius = softRadius;
 	//radius of one-point penumbra at the considered point (in world coordinates)
 	//note that proper formula is:  lightRadius * (lightDist - occlDist) / occlDist;
-	float blurRadiusWorld = lightRadius * (centerFragZ - avgBlockerZ) / avgBlockerZ;
-	//blur radius relative to light distance
-	//note: it is very important to limit blur angle <= search angle !
-	float blurRadiusRel = min(blurRadiusWorld / lightDist, searchAngle);
-	//minor radius of the ellipse, which is: the intersection of penumbra cone with cube's face
-	float blurRadiusCube = blurRadiusRel * secFallAngle;
-	//the same radius in shadowmap pixels
-	float blurRadiusPixels = blurRadiusCube * shadowMapResolution;
-
-	//limit blur radius from below: blur must cover at least (2*M) pixels in any direction
-	//otherwise user will see the shitty pixelated shadows, which is VERY ugly
-	//we prefer blurring shadows to hell instead of showing pixelation...
+	float penumbraDepth = max(centerFragZ - avgBlockerZ, 0.0);
+	float blurRadiusWorld = lightRadius * penumbraDepth / max(avgBlockerZ, 1e-3);
+	//limit blur radius from below to avoid pixelation, without letting coarse distant tiles expand past search cone
 	const float minBlurInShadowPixels = 5.0;
-	if (blurRadiusPixels < minBlurInShadowPixels) {
-		float coeff = minBlurInShadowPixels / (blurRadiusPixels + 1e-7);
-		//note: other versions of blurRadius are not used below
-		blurRadiusRel *= coeff;
-	}
+	float minBlurRel = min(minBlurInShadowPixels / (shadowMapResolution * secFallAngle), max(searchAngle, 0.012));
+	//blur radius relative to light distance, clamped to [minBlurRel, max(searchAngle, minBlurRel)]
+	float blurRadiusRel = clamp(blurRadiusWorld / max(lightDist, 1.0), minBlurRel, max(searchAngle, minBlurRel));
+
+	mat2 patternRot = softShadowsPatternRotation();
 	float weightSum = 1.0;
 	for (int i = 0; i < softQuality; i++) {
 		//unit vector L' = perturbed version of L
@@ -258,10 +252,22 @@ float computeShadowMapCoefficient(
 		//the multiplier is:  (cos(D ^ L') / cos(N ^ L')) / (cos(D ^ L) / cos(N ^ L))
 		//where L and L' is central/perturbed light direction, D is normal of active cubemap face, and N is normal of tangent plane
 		float dotDpL = max(max(abs(perturbedLightDir.x), abs(perturbedLightDir.y)), abs(perturbedLightDir.z));
-		float distCoeff = lightFallAngle / max(-dot(worldNormal, perturbedLightDir), 1e-3) * (dotDpL * secFallAngle);
+		float ndl = max(-dot(worldNormal, perturbedLightDir), minTangentNdl);
+		float distCoeff = clamp(lightFallAngle / ndl * (dotDpL * secFallAngle), 0.5, 2.0);
 		float fragZ = centerFragZ * distCoeff;
+#if STGATILOV_USEGATHER && defined(GL_ARB_texture_gather)
+		if (erodeLevel > 0) {
+			float blockerZ = ShadowAtlasNearestForVector(shadowMap, shadowRect, perturbedLightDir, erodeLevel);
+			lit += sampleWeight * float(blockerZ >= fragZ - errorMargin);
+		} else {
+			vec4 wgt;
+			vec4 blockerZ4 = ShadowAtlasForVector4(shadowMap, shadowRect, perturbedLightDir, wgt);
+			lit += sampleWeight * dot(wgt, step(fragZ - errorMargin, blockerZ4));
+		}
+#else
 		float blockerZ = ShadowAtlasNearestForVector(shadowMap, shadowRect, perturbedLightDir, erodeLevel);
 		lit += sampleWeight * float(blockerZ >= fragZ - errorMargin);
+#endif
 		weightSum += sampleWeight;
 	}
 	lit /= weightSum;

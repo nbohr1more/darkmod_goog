@@ -217,23 +217,9 @@ void main() {
 				float aoC = texture(u_ssaoTexture, gl_FragCoord.xy / u_renderResolution).r;
 				contactFade *= 1.0 - smoothstep(u_shadowMapContactCrease.y - 0.2, u_shadowMapContactCrease.y, aoC);
 			}
-			// a leak is a lit pixel right next to shadow: far from any shadow in the shadow map (e.g. around a candle
-			// whose own geometry does not cast) the march only finds false blockers, so skip it there
-			if (contactFade > 0.01 && shadowsCoeff > 0.98) {
-				// soft count of shadowed taps (not a binary test): a pixel with two or more shadowed neighbors counts fully
-				float nearShadow = 0.0;
-				for (int ring = 0; ring < 2 && nearShadow < 1.0; ring++) {
-					float R = ring == 0 ? 4.0 : 10.0;
-					for (int i = 0; i < 8; i++) {
-						float a = (float(i) + 0.5 * float(ring)) * 0.785398;
-						nearShadow += leakShadowAt(dirToLight, dirToLightDx, dirToLightDy, vec2(cos(a), sin(a)) * R, worldNormal, erodeLevel) > 0.5 ? 0.5 : 0.0;
-					}
-				}
-				nearShadow = smoothstep(0.0, 1.0, nearShadow);
-				contactFade *= nearShadow;
-			}
 			if (contactFade > 0.01) {
-				vec3 objectToLight = var_TangentBitangentNormalMatrix * var_LightDirLocal;
+				// Transform world-space vector directly to view space (avoids TBN skew on sheared UVs)
+				vec3 objectToLight = var_LightDirWorld * mat3(u_modelMatrix);
 				vec3 lightPos_v = P_v + mv3 * objectToLight;
 				float occlusion = ssabssContactOcclusionBlurred(
 					u_depthTexture, u_projectionMatrix,

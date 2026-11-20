@@ -104,16 +104,19 @@ vec3 estimateContactBlockerDist(
 // Returns occlusion (0..1): 1 if a visible surface is found between the receiver and the light, faded out with the distance along the ray.
 // It can only find what is visible on screen, so it is used only to add shadow where a shadow map has leaked.
 // How much the pixel sits in a crease / concave corner, measured from the depth buffer alone (independent of SSAO quality):
-// 8 points on a ring of the given world radius around the pixel, a crease has visible surface in front of its tangent plane.
+// 8 points on a dual-ring in the surface's tangent plane around the pixel; a crease has visible surface in front of its tangent plane.
 float contactCreaseFactor(
 	sampler2D depthTexture, mat4 projectionMatrix,
 	vec3 P_v, vec3 N_v, float radius, float noise,
 	vec2 uvMin, vec2 uvMax
 ) {
+	vec3 T = normalize(abs(N_v.y) < 0.9 ? cross(N_v, vec3(0.0, 1.0, 0.0)) : cross(N_v, vec3(1.0, 0.0, 0.0)));
+	vec3 B = cross(N_v, T);
 	float sum = 0.0;
 	for (int i = 0; i < 8; i++) {
 		float a = float(i) * 0.785398 + 0.3;	// fixed angles: a per-pixel rotation would turn the result into stipple
-		vec3 Q_v = P_v + vec3(cos(a), sin(a), 0.0) * radius;
+		float r = (i % 2 == 0) ? radius : radius * 0.4;	// inner + outer ring catches both 1-2px seams and wider corners
+		vec3 Q_v = P_v + (cos(a) * T + sin(a) * B) * r;
 		vec4 clip = projectionMatrix * vec4(Q_v, 1.0);
 		if (clip.w <= 0.0)
 			continue;
@@ -156,13 +159,13 @@ float ssabssContactOcclusion(
 
 		float sceneDepth = textureLod(depthTexture, uv, 0.0).r;
 		float dz = (-Q_v.z) - depthToZ(projectionMatrix, sceneDepth);	// > 0: the ray is behind the visible surface
-		float bias = 0.012 * (-P_v.z) + 0.04 * t;
+		float bias = 0.0025 * (-P_v.z) + 0.025 * t;
 		// soft depth comparison: the occlusion grows over this range instead of jumping, it is wider farther from the receiver
-		float softRange = 1.0 + 0.1 * t;
+		float softRange = 0.35 + 0.05 * t;
 		// the occluder is thin in the ray direction: a surface far in front of the ray is not it
 		// assumed thickness of every visible surface: a ray further behind it passes (it is not blocked by a small object in front of a far background).
 		// grows with the distance from the camera, since depth gets coarser there
-		float thickness = thicknessBase * (1.0 + (-Q_v.z) * 0.005) + 0.15 * t;
+		float thickness = thicknessBase * (1.0 + (-Q_v.z) * 0.003) + 0.15 * t;
 		float wDepth = smoothstep(bias, bias + softRange, dz) * (1.0 - smoothstep(bias + thickness, bias + thickness + 2.0 * softRange, dz));
 		if (wDepth > 0.001) {
 			vec3 diff = viewPosFromUvDepth(projectionMatrix, uv, sceneDepth) - P_v;
@@ -171,9 +174,9 @@ float ssabssContactOcclusion(
 			// and the surface is not close to the light itself (candle holder, lamp body, or whatever the light is attached to)
 			float wGeom = smoothstep(0.04, 0.12, dot(N_v, diff) / dist3D)
 				* smoothstep(0.35, 0.6, dot(L_dir, diff) / dist3D)
-				* smoothstep(0.2 * lightDist, 0.3 * lightDist, length(P_v + diff - lightPos_v));
+				* smoothstep(4.0, 12.0, length(P_v + diff - lightPos_v));
 			// the farther along the ray, the weaker
-			float w = wDepth * wGeom * (1.0 - smoothstep(0.5, 1.0, frac));
+			float w = wDepth * wGeom * (1.0 - smoothstep(0.75, 1.0, frac));
 			transmittance *= 1.0 - w;
 		}
 	}
@@ -181,7 +184,7 @@ float ssabssContactOcclusion(
 }
 
 // The same, averaged over the receiver position moved by blurRadius (world units) along the tangent plane: a blur of the occlusion
-// on the surface, which softens the edges of the contact halo. Costs 5 marches, each with about half of the steps.
+// on the surface, which softens the edges of the contact halo. Keeps full step count on the center ray so thin blockers aren't skipped.
 float ssabssContactOcclusionBlurred(
 	sampler2D depthTexture, mat4 projectionMatrix,
 	vec3 P_v, vec3 N_v, vec3 lightPos_v, float maxDist, int steps, float noise,
@@ -192,7 +195,7 @@ float ssabssContactOcclusionBlurred(
 	vec3 T = normalize(abs(N_v.y) < 0.9 ? cross(N_v, vec3(0.0, 1.0, 0.0)) : cross(N_v, vec3(1.0, 0.0, 0.0)));
 	vec3 B = cross(N_v, T);
 	int s = max(4, steps / 2);
-	float center = ssabssContactOcclusion(depthTexture, projectionMatrix, P_v, N_v, lightPos_v, maxDist, s, noise, uvMin, uvMax, thicknessBase);
+	float center = ssabssContactOcclusion(depthTexture, projectionMatrix, P_v, N_v, lightPos_v, maxDist, steps, noise, uvMin, uvMax, thicknessBase);
 	float sum = 0.4 * center;
 	float maxOcc = center;
 	vec3 offs[4] = vec3[4](T, -T, B, -B);
